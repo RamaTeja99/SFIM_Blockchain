@@ -1,0 +1,4 @@
+websockets==12.0
+sqlalchemy==2.0.23
+blspy==2.0.3
+cryptography==41.0.7
