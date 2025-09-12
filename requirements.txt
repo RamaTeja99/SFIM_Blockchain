@@ -8,11 +8,11 @@ aiofiles==23.2.1
 python-multipart==0.0.6
 
 # Cryptography
-blspy==2.0.2
+#blspy==2.0.2
 cryptography==41.0.7
 
 # TPM support
-tpm2-pytss==2.2.1
+#tpm2-pytss==2.2.1
 
 # Database drivers
 psycopg[asyncio]==3.1.13
