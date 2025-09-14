@@ -1,539 +1,445 @@
-"use client";
+"use client"
 
-import React, { useState, useEffect, useCallback, useRef } from "react";
-import {
-  DocumentTextIcon,
-  ShieldCheckIcon,
-  CpuChipIcon,
-  CheckCircleIcon,
-  XCircleIcon,
-  ClockIcon,
-} from "@heroicons/react/24/outline";
+import { useState, useEffect, useCallback } from 'react';
 
-// Types
-interface IntegrityEvent {
+interface UploadResult {
+  success?: boolean;
+  message?: string;
+  file_hash?: string;
+  merkle_root?: string;
+  trust_level?: string;
+  consensus_status?: string;
+  consensus_round?: number;
+  blockchain_status?: string;
+  error?: string;
+}
+
+interface VerifyResult {
+  valid: boolean;
+  message: string;
+  blockchain_status?: string;
+  log?: {
+    id?: string;
+    fileName?: string;
+    file_hash?: string;
+    status?: string;
+    timestamp?: string;
+    merkle_root?: string;
+    node_id?: number;
+    consensus_round?: number;
+    trust_level?: string;
+    verification_result?: string;
+  };
+  error?: string;
+}
+
+interface BlockchainEvent {
   id: number;
   merkle_root: string;
   file_path?: string;
   file_hash?: string;
   node_id: number;
   consensus_round: number;
-  status: "pending" | "committed" | "rejected";
+  status: string;
   timestamp: string;
   created_at: string;
 }
 
-interface TPMQuote {
-  id: number;
-  node_id: number;
-  nonce: string;
-  is_valid: boolean;
-  trust_level: "trusted" | "suspicious" | "untrusted" | "unknown";
-  timestamp: string;
-}
-
-interface NodeStatus {
+interface SystemStatus {
   node_id: number;
   is_primary: boolean;
   total_nodes: number;
-  connected_peers: number;
-  database_url: string;
-  use_simulated_tpm: boolean;
+  blockchain_files: number;
+  pending_uploads: number;
+  consensus_round: number;
   timestamp: number;
 }
 
-interface FileUploadResult {
-  valid: boolean;
-  log: IntegrityEvent;
-  error?: string;
-}
+export default function BlockchainFileIntegrity() {
+  const [activeTab, setActiveTab] = useState<'upload' | 'verify'>('upload');
+  const [uploadResult, setUploadResult] = useState<UploadResult | null>(null);
+  const [verifyResult, setVerifyResult] = useState<VerifyResult | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const [isVerifying, setIsVerifying] = useState(false);
+  const [events, setEvents] = useState<BlockchainEvent[]>([]);
+  const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
+  const [connectionStatus, setConnectionStatus] = useState<'online' | 'offline'>('offline');
 
-interface WebSocketMessage {
-  type: string;
-  data?: any;
-  events?: IntegrityEvent[];
-  quotes?: TPMQuote[];
-  timestamp?: number;
-}
-
-const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:7000";
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:7000";
-
-export default function BlockchainIntegrityScanner() {
-  // State management
-  const [events, setEvents] = useState<IntegrityEvent[]>([]);
-  const [quotes, setQuotes] = useState<TPMQuote[]>([]);
-  const [nodeStatus, setNodeStatus] = useState<NodeStatus | null>(null);
-  const [isConnected, setIsConnected] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [uploadResult, setUploadResult] = useState<FileUploadResult | null>(
-    null
-  );
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [dragOver, setDragOver] = useState(false);
-  const [activeTab, setActiveTab] = useState("FILE");
-
-  // Refs
-  const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  // WebSocket connection management
-  const connectWebSocket = useCallback(() => {
+  const fetchEvents = useCallback(async () => {
     try {
-      const ws = new WebSocket(`${WS_URL}/ws`);
-
-      ws.onopen = () => {
-        console.log("WebSocket connected");
-        setIsConnected(true);
-        if (reconnectTimeoutRef.current) {
-          clearTimeout(reconnectTimeoutRef.current);
-          reconnectTimeoutRef.current = null;
-        }
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const message: WebSocketMessage = JSON.parse(event.data);
-
-          if (message.type === "feed_update") {
-            if (message.events) {
-              setEvents(message.events);
-            }
-            if (message.quotes) {
-              setQuotes(message.quotes);
-            }
-          }
-        } catch (error) {
-          console.error("Error parsing WebSocket message:", error);
-        }
-      };
-
-      ws.onclose = () => {
-        console.log("WebSocket disconnected");
-        setIsConnected(false);
-        wsRef.current = null;
-
-        if (!reconnectTimeoutRef.current) {
-          reconnectTimeoutRef.current = setTimeout(() => {
-            console.log("Attempting to reconnect...");
-            connectWebSocket();
-          }, 3000);
-        }
-      };
-
-      ws.onerror = (error) => {
-        console.error("WebSocket error:", error);
-        setIsConnected(false);
-      };
-
-      wsRef.current = ws;
-    } catch (error) {
-      console.error("Failed to create WebSocket connection:", error);
-      setIsConnected(false);
-    }
-  }, []);
-
-  // Fetch node status
-  const fetchNodeStatus = useCallback(async () => {
-    try {
-      const response = await fetch(`${BACKEND_URL}/api/status`);
+      const response = await fetch('/api/events?limit=10');
       if (response.ok) {
-        const status = await response.json();
-        setNodeStatus(status);
+        const data = await response.json();
+        setEvents(data);
       }
     } catch (error) {
-      console.error("Failed to fetch node status:", error);
+      console.error('Failed to fetch events:', error);
     }
   }, []);
 
-  // Initialize connections
-  useEffect(() => {
-    connectWebSocket();
-    fetchNodeStatus();
-
-    const statusInterval = setInterval(fetchNodeStatus, 10000);
-
-    return () => {
-      if (wsRef.current) {
-        wsRef.current.close();
-      }
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-      }
-      clearInterval(statusInterval);
-    };
-  }, [connectWebSocket, fetchNodeStatus]);
-
-  // File upload handlers
-  const handleFileSelect = (file: File) => {
-    setSelectedFile(file);
-    setUploadResult(null);
-  };
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    setDragOver(true);
-  };
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
-    setDragOver(false);
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setDragOver(false);
-
-    const files = e.dataTransfer.files;
-    if (files.length > 0) {
-      handleFileSelect(files[0]);
-    }
-  };
-
-  const uploadFile = async () => {
-    if (!selectedFile) return;
-
-    setUploading(true);
-    setUploadResult(null);
-
+  const fetchSystemStatus = useCallback(async () => {
     try {
-      const formData = new FormData();
-      formData.append("file", selectedFile);
+      const response = await fetch('/api/status');
+      if (response.ok) {
+        const data = await response.json();
+        setSystemStatus(data);
+        setConnectionStatus('online');
+      } else {
+        setConnectionStatus('offline');
+      }
+    } catch (error) {
+      console.error('Failed to fetch system status:', error);
+      setConnectionStatus('offline');
+    }
+  }, []);
 
-      const response = await fetch("/api/upload", {
-        method: "POST",
+  useEffect(() => {
+    fetchEvents();
+    fetchSystemStatus();
+    
+    const interval = setInterval(() => {
+      fetchEvents();
+      fetchSystemStatus();
+    }, 5000); // Update every 5 seconds
+
+    return () => clearInterval(interval);
+  }, [fetchEvents, fetchSystemStatus]);
+
+  const handleUpload = async (file: File) => {
+    setIsUploading(true);
+    setUploadResult(null);
+    
+    try {
+      console.log(`🚀 Starting blockchain upload workflow for: ${file.name}`);
+      
+      const formData = new FormData();
+      formData.append('file', file);
+      
+      const response = await fetch('/api/upload', {
+        method: 'POST',
         body: formData,
       });
-
-      const result: FileUploadResult = await response.json();
+      
+      const result = await response.json();
       setUploadResult(result);
-
-      if (result.valid) {
-        setTimeout(fetchNodeStatus, 1000);
+      
+      if (result.success && result.consensus_status === 'committed') {
+        console.log('✅ File successfully added to blockchain');
+        fetchEvents(); // Refresh events
+      } else if (result.consensus_status === 'timeout') {
+        console.log('⏰ Blockchain consensus timeout - file may be added later');
       }
+      
     } catch (error) {
-      console.error("Upload failed:", error);
+      console.error('❌ Upload error:', error);
       setUploadResult({
-        valid: false,
-        error: "Upload failed. Please try again.",
-        log: {} as IntegrityEvent,
+        success: false,
+        error: 'Upload failed',
+        blockchain_status: '🔴 UPLOAD_FAILED'
       });
     } finally {
-      setUploading(false);
+      setIsUploading(false);
     }
   };
 
-  const StatusBadge = ({ status }: { status: string }) => {
-    const getStatusClass = (status: string) => {
-      switch (status) {
-        case "committed":
-          return "desktop-badge committed";
-        case "pending":
-          return "desktop-badge pending";
-        case "rejected":
-          return "desktop-badge rejected";
-        case "trusted":
-          return "desktop-badge trusted";
-        case "suspicious":
-          return "desktop-badge suspicious";
-        case "untrusted":
-          return "desktop-badge untrusted";
-        default:
-          return "desktop-badge";
-      }
-    };
+  const handleVerify = async (file: File) => {
+    setIsVerifying(true);
+    setVerifyResult(null);
+    
+    try {
+      console.log(`🔍 Verifying blockchain integrity for: ${file.name}`);
+      
+      const formData = new FormData();
+      formData.append('file', file);
+      
+      const response = await fetch('/api/verify', {
+        method: 'POST',
+        body: formData,
+      });
+      
+      const result = await response.json();
+      setVerifyResult(result);
+      
+    } catch (error) {
+      console.error('❌ Verify error:', error);
+      setVerifyResult({
+        valid: false,
+        message: 'Verification failed',
+        blockchain_status: '🔴 VERIFY_FAILED'
+      });
+    } finally {
+      setIsVerifying(false);
+    }
+  };
 
-    return <span className={getStatusClass(status)}>{status}</span>;
+  const getStatusBadgeStyle = (status: string) => {
+    switch (status) {
+      case 'committed':
+        return 'desktop-badge committed';
+      case 'pending':
+        return 'desktop-badge pending';
+      default:
+        return 'desktop-badge rejected';
+    }
+  };
+
+  const getBlockchainStatusStyle = (status?: string) => {
+    if (status?.includes('✅') || status?.includes('BLOCKCHAIN')) {
+      return 'text-green-600 font-semibold';
+    } else if (status?.includes('🟡') || status?.includes('PENDING')) {
+      return 'text-yellow-600 font-semibold';
+    } else if (status?.includes('🔴') || status?.includes('NOT')) {
+      return 'text-red-600 font-semibold';
+    }
+    return 'text-gray-600';
   };
 
   return (
     <div className="desktop-wrapper">
-      {/* Header */}
-      <header className="desktop-header">
-        <h1 className="desktop-logo">🔒 BlockchainVerify</h1>
+      <div className="desktop-header">
+        <h1 className="desktop-logo">🔗 BlockchainVerify</h1>
         <p className="desktop-subtitle">
-          Analyze files for integrity verification using distributed blockchain
-          consensus and TPM attestation
+          Distributed File Integrity Verification with Blockchain Consensus
         </p>
-
-        {/* Connection Status */}
+        
+        {/* System Status */}
         <div className="desktop-connection">
           <div className="desktop-connection-status">
-            <div
-              className={`desktop-connection-dot ${
-                isConnected ? "online" : "offline"
-              }`}
-            ></div>
-            <span className="text-gray-700">
-              {isConnected ? "Connected to Network" : "Disconnected"}
+            <div className={`desktop-connection-dot ${connectionStatus}`}></div>
+            <span>
+              {connectionStatus === 'online' 
+                ? `Node ${systemStatus?.node_id} • ${systemStatus?.total_nodes} Nodes • Round ${systemStatus?.consensus_round}`
+                : 'Disconnected'
+              }
             </span>
           </div>
-          {nodeStatus && (
-            <div className="desktop-connection-status">
-              <CpuChipIcon className="w-5 h-5 mr-2 text-blue-600" />
-              <span className="text-gray-700">
-                Node {nodeStatus.node_id}{" "}
-                {nodeStatus.is_primary ? "(Primary)" : "(Backup)"} •{" "}
-                {nodeStatus.connected_peers}/{nodeStatus.total_nodes - 1} Peers
-              </span>
+          
+          {systemStatus && (
+            <div className="text-sm text-gray-600">
+              📊 Blockchain Files: {systemStatus.blockchain_files} | 
+              ⏳ Pending: {systemStatus.pending_uploads} |
+              {systemStatus.is_primary ? ' 👑 Primary Node' : ' 🔗 Peer Node'}
             </div>
           )}
         </div>
+      </div>
 
-        {/* Tab Navigation */}
-        <nav className="desktop-tabs">
-          <div
-            className={`desktop-tab ${activeTab === "FILE" ? "active" : ""}`}
-            onClick={() => setActiveTab("FILE")}
-          >
-            FILE
-          </div>
-        </nav>
-      </header>
+      {/* Workflow Information */}
+      <div className="mb-8 p-6 bg-blue-50 rounded-lg border border-blue-200">
+        <h3 className="text-lg font-semibold mb-3 text-blue-900">🔗 Blockchain Workflow</h3>
+        <div className="text-sm text-blue-800 space-y-2">
+          <div><strong>1. Upload:</strong> File Scanner → SHA-512 → TPM Quote → Peer Validation → Merkle Tree → PBFT Consensus → Blockchain</div>
+          <div><strong>2. Verify:</strong> Check file integrity against distributed blockchain ledger with consensus verification</div>
+        </div>
+      </div>
 
-      {/* Main Content - Desktop Layout */}
+      <div className="desktop-tabs">
+        <button
+          className={`desktop-tab ${activeTab === 'upload' ? 'active' : ''}`}
+          onClick={() => setActiveTab('upload')}
+        >
+          📤 Add to Blockchain
+        </button>
+        <button
+          className={`desktop-tab ${activeTab === 'verify' ? 'active' : ''}`}
+          onClick={() => setActiveTab('verify')}
+        >
+          🔍 Verify from Blockchain
+        </button>
+      </div>
+
       <div className="desktop-main">
-        {/* Upload Section */}
-        <div className="desktop-upload-section">
-          {activeTab === "FILE" && (
-            <>
-              {/* File Upload Area */}
-              <div
-                className={`desktop-upload-area ${dragOver ? "dragover" : ""}`}
-                onDragOver={handleDragOver}
-                onDragLeave={handleDragLeave}
-                onDrop={handleDrop}
-                onClick={() => fileInputRef.current?.click()}
-              >
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  className="desktop-file-input"
-                  onChange={(e) => {
-                    const file = e.target.files?.[0];
-                    if (file) handleFileSelect(file);
-                  }}
-                />
-
-                <DocumentTextIcon className="desktop-upload-icon" />
-                <div className="desktop-upload-text">
-                  {selectedFile ? selectedFile.name : "Choose file"}
-                </div>
-                <div className="desktop-upload-subtext">or drag it here</div>
-
-                {selectedFile && (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      uploadFile();
-                    }}
-                    disabled={uploading}
-                    className="desktop-upload-button"
-                  >
-                    {uploading ? (
-                      <span className="flex items-center">
-                        <span className="desktop-spinner mr-3"></span>
-                        Verifying...
-                      </span>
-                    ) : (
-                      "Verify File"
-                    )}
-                  </button>
-                )}
-              </div>
-
-              {/* Upload Result */}
-              {uploadResult && (
-                <div
-                  className={`desktop-result ${
-                    uploadResult.valid ? "success" : "error"
-                  }`}
-                >
-                  <div
-                    className={`desktop-result-title ${
-                      uploadResult.valid ? "success" : "error"
-                    }`}
-                  >
-                    {uploadResult.valid ? (
-                      <CheckCircleIcon className="w-6 h-6 mr-3" />
-                    ) : (
-                      <XCircleIcon className="w-6 h-6 mr-3" />
-                    )}
-                    {uploadResult.valid
-                      ? "File verified successfully!"
-                      : "Verification failed"}
-                  </div>
-                  {uploadResult.error && (
-                    <p className="text-red-700 text-base mt-3">
-                      {uploadResult.error}
-                    </p>
-                  )}
-                  {uploadResult.valid && uploadResult.log && (
-                    <div className="desktop-result-details">
-                      <p>
-                        <strong>Hash:</strong>{" "}
-                        <span className="desktop-table-hash">
-                          {uploadResult.log.file_hash?.substring(0, 32)}...
-                        </span>
-                      </p>
-                      <p>
-                        <strong>Consensus Round:</strong>{" "}
-                        {uploadResult.log.consensus_round}
-                      </p>
-                      <p>
-                        <strong>Status:</strong>{" "}
-                        <StatusBadge status={uploadResult.log.status} />
-                      </p>
-                    </div>
-                  )}
-                </div>
-              )}
-            </>
-          )}
-        </div>
-
-        {/* Sidebar - Status Cards */}
-        <div className="desktop-sidebar">
-          <div className="desktop-status-grid">
-            <div className="desktop-status-card">
-              <h3 className="desktop-status-title">
-                <CpuChipIcon className="desktop-status-icon" />
-                System Status
-              </h3>
-              {nodeStatus ? (
-                <div className="space-y-1">
-                  <div className="desktop-status-item">
-                    <span className="desktop-status-label">Node ID:</span>
-                    <span className="desktop-status-value">
-                      {nodeStatus.node_id}
-                    </span>
-                  </div>
-                  <div className="desktop-status-item">
-                    <span className="desktop-status-label">Role:</span>
-                    <span className="desktop-status-value">
-                      {nodeStatus.is_primary ? "Primary" : "Backup"}
-                    </span>
-                  </div>
-                  <div className="desktop-status-item">
-                    <span className="desktop-status-label">
-                      Connected Peers:
-                    </span>
-                    <span className="desktop-status-value">
-                      {nodeStatus.connected_peers}/{nodeStatus.total_nodes - 1}
-                    </span>
-                  </div>
-                  <div className="desktop-status-item">
-                    <span className="desktop-status-label">TPM Mode:</span>
-                    <span className="desktop-status-value">
-                      {nodeStatus.use_simulated_tpm ? "Simulated" : "Hardware"}
-                    </span>
-                  </div>
-                </div>
-              ) : (
-                <p className="text-gray-500 text-base">
-                  Loading system status...
-                </p>
-              )}
+        {activeTab === 'upload' && (
+          <div className="desktop-upload-area">
+            <div className="desktop-upload-icon">📤</div>
+            <div className="desktop-upload-text">Add File to Blockchain</div>
+            <div className="desktop-upload-subtext">
+              Upload a file to add it to the distributed blockchain ledger with PBFT consensus
             </div>
-
-            <div className="desktop-status-card">
-              <h3 className="desktop-status-title">
-                <ShieldCheckIcon className="desktop-status-icon" />
-                Node Trust Levels
-              </h3>
-              {quotes.length > 0 ? (
-                <div className="space-y-4">
-                  {quotes.slice(0, 3).map((quote) => (
-                    <div
-                      key={quote.id}
-                      className="flex items-center justify-between"
-                    >
-                      <span className="desktop-status-label">
-                        Node {quote.node_id}
-                      </span>
-                      <StatusBadge status={quote.trust_level} />
-                    </div>
-                  ))}
-                </div>
+            <input
+              className="desktop-file-input"
+              type="file"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) handleUpload(file);
+              }}
+              disabled={isUploading}
+            />
+            <button className="desktop-upload-button" disabled={isUploading}>
+              {isUploading ? (
+                <>
+                  <span className="desktop-spinner"></span>
+                  Processing Blockchain Workflow...
+                </>
               ) : (
-                <p className="text-gray-500 text-base">
-                  No trust data available
-                </p>
+                'Select File to Upload'
+              )}
+            </button>
+          </div>
+        )}
+
+        {activeTab === 'verify' && (
+          <div className="desktop-upload-area">
+            <div className="desktop-upload-icon">🔍</div>
+            <div className="desktop-upload-text">Verify File Integrity</div>
+            <div className="desktop-upload-subtext">
+              Check if your file exists on the blockchain and verify its integrity
+            </div>
+            <input
+              className="desktop-file-input"
+              type="file"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) handleVerify(file);
+              }}
+              disabled={isVerifying}
+            />
+            <button className="desktop-upload-button" disabled={isVerifying}>
+              {isVerifying ? (
+                <>
+                  <span className="desktop-spinner"></span>
+                  Verifying with Blockchain...
+                </>
+              ) : (
+                'Select File to Verify'
+              )}
+            </button>
+          </div>
+        )}
+
+        {/* Upload Results */}
+        {uploadResult && (
+          <div className={`desktop-result ${uploadResult.success ? 'success' : 'error'}`}>
+            <div className="desktop-result-title">
+              {uploadResult.success ? '✅ Blockchain Upload Result' : '❌ Upload Failed'}
+            </div>
+            <div className="desktop-result-content">
+              <p><strong>Status:</strong> 
+                <span className={getBlockchainStatusStyle(uploadResult.blockchain_status)}>
+                  {uploadResult.blockchain_status || 'Unknown'}
+                </span>
+              </p>
+              <p>{uploadResult.message}</p>
+              {uploadResult.error && (
+                <p className="text-red-600">❌ {uploadResult.error}</p>
+              )}
+              {uploadResult.success && uploadResult.file_hash && (
+                <div className="mt-3 space-y-1">
+                  <p><strong>File Hash:</strong> {uploadResult.file_hash.substring(0, 32)}...</p>
+                  <p><strong>Merkle Root:</strong> {uploadResult.merkle_root?.substring(0, 32)}...</p>
+                  <p><strong>Consensus Round:</strong> {uploadResult.consensus_round}</p>
+                  <p><strong>Trust Level:</strong> {uploadResult.trust_level}</p>
+                </div>
               )}
             </div>
           </div>
-        </div>
+        )}
 
-        {/* Events Section - Full Width */}
-        <div className="desktop-events">
-          <h2 className="desktop-events-title">Recent Integrity Events</h2>
-
-          {events.length > 0 ? (
-            <div className="desktop-events-table">
-              <table className="w-full">
-                <thead className="desktop-table-header">
-                  <tr>
-                    <th>Merkle Root</th>
-                    <th>Node</th>
-                    <th>Round</th>
-                    <th>Status</th>
-                    <th>Timestamp</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {events.slice(0, 10).map((event) => (
-                    <tr key={event.id} className="desktop-table-row">
-                      <td className="desktop-table-cell">
-                        <div className="desktop-table-hash">
-                          {event.merkle_root.substring(0, 16)}...
-                        </div>
-                        {event.file_path && (
-                          <div className="text-sm text-gray-500 mt-2">
-                            {event.file_path}
-                          </div>
-                        )}
-                      </td>
-                      <td className="desktop-table-cell">{event.node_id}</td>
-                      <td className="desktop-table-cell">
-                        {event.consensus_round}
-                      </td>
-                      <td className="desktop-table-cell">
-                        <StatusBadge status={event.status} />
-                      </td>
-                      <td className="desktop-table-cell">
-                        {new Date(event.timestamp).toLocaleString()}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+        {/* Verify Results */}
+        {verifyResult && (
+          <div className={`desktop-result ${verifyResult.valid ? 'success' : 'error'}`}>
+            <div className="desktop-result-title">
+              {verifyResult.valid ? '✅ Blockchain Verification Result' : '❌ Verification Failed'}
             </div>
-          ) : (
-            <div className="desktop-empty">
-              <DocumentTextIcon className="desktop-empty-icon" />
-              <h3 className="desktop-empty-title">No integrity events yet</h3>
-              <p className="desktop-empty-subtitle">
-                Upload files to see integrity verification events here
+            <div className="desktop-result-content">
+              <p><strong>Status:</strong> 
+                <span className={getBlockchainStatusStyle(verifyResult.blockchain_status)}>
+                  {verifyResult.blockchain_status || 'Unknown'}
+                </span>
               </p>
+              <p>{verifyResult.message}</p>
+              {verifyResult.valid && verifyResult.log && (
+                <div className="mt-3 space-y-1">
+                  <p><strong>File Hash:</strong> {verifyResult.log.file_hash?.substring(0, 32)}...</p>
+                  <p><strong>Consensus Round:</strong> {verifyResult.log.consensus_round}</p>
+                  <p><strong>Node ID:</strong> {verifyResult.log.node_id}</p>
+                  <p><strong>Trust Level:</strong> {verifyResult.log.trust_level}</p>
+                  <p><strong>Verification:</strong> {verifyResult.log.verification_result}</p>
+                </div>
+              )}
+              {verifyResult.error && (
+                <p className="text-red-600">❌ {verifyResult.error}</p>
+              )}
             </div>
+          </div>
+        )}
+
+        {/* System Status */}
+        <div className="desktop-status-grid">
+          <div className="desktop-status-card">
+            <div className="desktop-status-title">📊 Blockchain Status</div>
+            {systemStatus ? (
+              <div className="space-y-2 text-sm">
+                <div>Node ID: <strong>{systemStatus.node_id}</strong></div>
+                <div>Role: <strong>{systemStatus.is_primary ? '👑 Primary' : '🔗 Peer'}</strong></div>
+                <div>Total Nodes: <strong>{systemStatus.total_nodes}</strong></div>
+                <div>Blockchain Files: <strong>{systemStatus.blockchain_files}</strong></div>
+                <div>Pending Uploads: <strong>{systemStatus.pending_uploads}</strong></div>
+                <div>Consensus Round: <strong>{systemStatus.consensus_round}</strong></div>
+              </div>
+            ) : (
+              <p>Loading system status...</p>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Recent Blockchain Events */}
+      <div className="desktop-events">
+        <div className="desktop-events-title">📋 Recent Blockchain Events</div>
+        <div className="desktop-events-table-container">
+          {events.length > 0 ? (
+            <table className="desktop-events-table">
+              <thead>
+                <tr>
+                  <th>Merkle Root</th>
+                  <th>File</th>
+                  <th>Node</th>
+                  <th>Round</th>
+                  <th>Status</th>
+                  <th>Timestamp</th>
+                </tr>
+              </thead>
+              <tbody>
+                {events.map((event) => (
+                  <tr key={event.id}>
+                    <td>
+                      <code className="desktop-hash">
+                        {event.merkle_root.substring(0, 16)}...
+                      </code>
+                    </td>
+                    <td>
+                      {event.file_path && (
+                        <span className="desktop-file-name">{event.file_path}</span>
+                      )}
+                    </td>
+                    <td>{event.node_id}</td>
+                    <td>{event.consensus_round}</td>
+                    <td>
+                      <span className={getStatusBadgeStyle(event.status)}>
+                        {event.status}
+                      </span>
+                    </td>
+                    <td>{new Date(event.timestamp).toLocaleString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <p>Upload files to see blockchain events here</p>
           )}
         </div>
+      </div>
 
-        {/* Legal Notice */}
-        <div className="desktop-legal">
-          <p className="desktop-legal-text">
-            By uploading a file, you agree to our{" "}
-            <a href="#" className="desktop-legal-link">
-              Terms of Service
-            </a>{" "}
-            and{" "}
-            <a href="#" className="desktop-legal-link">
-              Privacy Policy
-            </a>
-            . Files are processed through distributed blockchain consensus. Do
-            not upload sensitive personal information.
-          </p>
+      {/* Legal */}
+      <div className="desktop-legal">
+        <div className="desktop-legal-text">
+          By uploading a file, you agree to our{" "}
+          <a href="#" className="desktop-legal-link">Terms of Service</a>
+          {" "} and{" "}
+          <a href="#" className="desktop-legal-link">Privacy Policy</a>
+          . Files are processed through distributed blockchain consensus with TPM attestation.
+          Do not upload sensitive personal information.
         </div>
       </div>
     </div>

@@ -11,7 +11,9 @@ export async function POST(request: NextRequest) {
 
     const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:7000";
 
-    // Forward to backend API (complete workflow)
+    console.log(`🚀 Starting blockchain upload for: ${file.name}`);
+
+    // Forward to backend API (complete blockchain workflow)
     const backendFormData = new FormData();
     backendFormData.append("file", file);
 
@@ -25,9 +27,17 @@ export async function POST(request: NextRequest) {
     }
 
     const result = await response.json();
+
+    // Enhanced response with blockchain status
+    if (result.success && result.consensus_status === "committed") {
+      console.log(`✅ File successfully added to blockchain: ${file.name}`);
+    } else if (result.success === false && result.consensus_status === "timeout") {
+      console.log(`⏰ Blockchain consensus timeout: ${file.name}`);
+    }
+
     return NextResponse.json(result);
   } catch (error) {
-    console.error("Upload route error:", error);
-    return NextResponse.json({ error: "Upload failed" }, { status: 500 });
+    console.error("❌ Blockchain upload route error:", error);
+    return NextResponse.json({ error: "Blockchain upload failed" }, { status: 500 });
   }
 }

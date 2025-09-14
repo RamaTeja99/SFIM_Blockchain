@@ -1,7 +1,6 @@
 import os
 from datetime import datetime
 from typing import Optional
-
 from sqlalchemy import Column, Integer, String, LargeBinary, DateTime, Boolean, Text, create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -76,7 +75,7 @@ class FileStorage(Base):
 
 class TPMQuote(Base):
     """Database model for TPM attestation quotes"""
-    __tablename__ = 'tmp_quotes'
+    __tablename__ = 'tmp_quotes'  # FIXED: Consistent table name
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     node_id = Column(Integer, nullable=False, index=True)
@@ -154,59 +153,102 @@ class AuditLog(Base):
         }
 
 
-# Database setup
-def create_engine_and_session(database_url: str = None) -> tuple[Engine, sessionmaker]:
-    """Create database engine and session factory"""
-    if database_url is None:
-        database_url = DATABASE_URL
+# FIXED: Improved database setup with automatic legacy globals update
+class DatabaseManager:
+    """Centralized database manager"""
 
-    # Ensure data directory exists
-    if database_url.startswith('sqlite:'):
-        db_path = database_url.replace('sqlite:///', '')
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    def __init__(self):
+        self.engine: Optional[Engine] = None
+        self.SessionLocal: Optional[sessionmaker] = None
+        self._initialized = False
 
-    # Configure engine
-    if database_url.startswith('sqlite'):
-        engine = create_engine(
-            database_url,
-            echo=False,
-            connect_args={"check_same_thread": False}
+    def init_database(self, database_url: str = None):
+        """Initialize database connection and create tables"""
+        if database_url is None:
+            database_url = DATABASE_URL
+
+        # Ensure data directory exists
+        if database_url.startswith('sqlite:'):
+            db_path = database_url.replace('sqlite:///', '')
+            data_dir = os.path.dirname(db_path)
+            if data_dir:
+                os.makedirs(data_dir, exist_ok=True)
+
+        # Configure engine
+        if database_url.startswith('sqlite'):
+            self.engine = create_engine(
+                database_url,
+                echo=False,
+                connect_args={"check_same_thread": False}
+            )
+        else:
+            self.engine = create_engine(database_url, echo=False)
+
+        # Create session factory
+        self.SessionLocal = sessionmaker(
+            autocommit=False,
+            autoflush=False,
+            bind=self.engine
         )
-    else:
-        engine = create_engine(database_url, echo=False)
 
-    # Create session factory
-    SessionLocal = sessionmaker(
-        autocommit=False,
-        autoflush=False,
-        bind=engine
-    )
+        # Create all tables
+        Base.metadata.create_all(bind=self.engine)
+        self._initialized = True
 
-    return engine, SessionLocal
+        # FIXED: Automatically update legacy globals after initialization
+        _update_legacy_globals()
+
+        print(f"✅ Database initialized: {database_url}")
+        return self.SessionLocal
+
+    def get_session(self):
+        """Get a database session"""
+        if not self._initialized or self.SessionLocal is None:
+            raise RuntimeError("❌ Database not initialized. Call init_database() first.")
+        return self.SessionLocal()
+
+    def is_initialized(self) -> bool:
+        """Check if database is initialized"""
+        return self._initialized and self.SessionLocal is not None
 
 
-# Global database objects
-engine: Optional[Engine] = None
-SessionLocal: Optional[sessionmaker] = None
+# Global database manager instance
+db_manager = DatabaseManager()
 
 
+# FIXED: Wrapper functions for compatibility
 def init_database(database_url: str = None):
-    """Initialize database connection and create tables"""
-    global engine, SessionLocal
-    engine, SessionLocal = create_engine_and_session(database_url)
-
-    # Create all tables
-    Base.metadata.create_all(bind=engine)
-    print(f"Database initialized: {database_url or DATABASE_URL}")
+    """Initialize database - wrapper for compatibility"""
+    return db_manager.init_database(database_url)
 
 
 def get_db_session():
     """Get database session for dependency injection"""
-    if SessionLocal is None:
-        raise RuntimeError("Database not initialized. Call init_database() first.")
-
-    db = SessionLocal()
+    session = db_manager.get_session()
     try:
-        yield db
+        yield session
     finally:
-        db.close()
+        session.close()
+
+
+def create_db_session():
+    """Create a new database session (direct access)"""
+    return db_manager.get_session()
+
+
+# Legacy compatibility - these will be set after initialization
+engine: Optional[Engine] = None
+SessionLocal: Optional[sessionmaker] = None
+
+
+def _update_legacy_globals():
+    """Update legacy global variables for compatibility"""
+    global engine, SessionLocal
+    engine = db_manager.engine
+    SessionLocal = db_manager.SessionLocal
+
+    # Verify the update worked
+    if SessionLocal is not None:
+        print("✅ Legacy globals updated successfully")
+    else:
+        print("⚠️ Legacy globals update failed - SessionLocal is still None")
