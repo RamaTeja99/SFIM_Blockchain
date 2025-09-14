@@ -6,21 +6,22 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import List, Dict, Set
+from typing import List, Dict
+
 import aiofiles
 import websockets
 
 # Add backend to path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+sys.path.insert(0, str(Path(__file__).parent))
 
-from backend.merkle import merkle_root
-from backend.models import init_database, SessionLocal, IntegrityEvent, AuditLog
+from merkle import merkle_root
+from models import init_database, SessionLocal, IntegrityEvent, AuditLog
 
 # Configuration
-WATCH_PATHS = os.getenv('WATCH_PATHS', '/watched').split(',')
-NODE_WS_URL = os.getenv('NODE_WS', 'ws://localhost:7000/ws')
-SCAN_INTERVAL = int(os.getenv('SCAN_INTERVAL', '10'))  # seconds
-DATABASE_URL = os.getenv('SFIM_DB', 'sqlite:///sfim_audit.db')
+WATCH_PATHS = [Path(p) for p in os.getenv('WATCH_PATHS', './watched').split(',')]
+NODE_WS_URL = os.getenv('NODE_WS_URL', 'ws://localhost:7000/ws')
+SCAN_INTERVAL = int(os.getenv('SCAN_INTERVAL', '10'))
+DATABASE_URL = os.getenv('SFIM_DB', f'sqlite:///./data/agent_sfim.db')
 
 # Logging setup
 logging.basicConfig(
@@ -33,9 +34,8 @@ logger = logging.getLogger("FileAgent")
 class FileMonitor:
     """Monitors files and computes Merkle roots"""
 
-    def __init__(self, watch_paths: List[str]):
-        self.watch_paths = [Path(p) for p in watch_paths]
-        self.last_scan_times: Dict[Path, float] = {}
+    def __init__(self, watch_paths: List[Path]):
+        self.watch_paths = watch_paths
         self.file_hashes: Dict[Path, bytes] = {}
 
         # Ensure watch paths exist
@@ -44,10 +44,7 @@ class FileMonitor:
             logger.info(f"Monitoring path: {path}")
 
     async def scan_files(self) -> tuple[List[bytes], Dict[str, str]]:
-        """
-        Scan all files in watch paths and return file hashes and metadata
-        Returns: (file_hashes, file_metadata)
-        """
+        """Scan all files and return hashes and metadata"""
         file_hashes = []
         file_metadata = {}
 
@@ -62,7 +59,6 @@ class FileMonitor:
                         # Read file and compute hash
                         async with aiofiles.open(file_path, 'rb') as f:
                             content = await f.read()
-
                         file_hash = hashlib.sha512(content).digest()
                         file_hashes.append(file_hash)
 
@@ -103,64 +99,11 @@ class FileMonitor:
         return root, file_metadata
 
 
-class PBFTClient:
-    """Client for communicating with PBFT network"""
-
-    def __init__(self, node_ws_url: str):
-        self.node_ws_url = node_ws_url
-        self.websocket = None
-        self.connected = False
-
-    async def connect(self):
-        """Connect to PBFT node"""
-        try:
-            self.websocket = await websockets.connect(self.node_ws_url)
-            self.connected = True
-            logger.info(f"Connected to PBFT node: {self.node_ws_url}")
-        except Exception as e:
-            logger.error(f"Failed to connect to PBFT node: {e}")
-            self.connected = False
-
-    async def submit_merkle_root(self, merkle_root_bytes: bytes, metadata: Dict[str, str]):
-        """Submit Merkle root to PBFT network"""
-        if not self.connected or not self.websocket:
-            await self.connect()
-
-        if not self.connected:
-            logger.error("Not connected to PBFT network")
-            return False
-
-        try:
-            message = {
-                'type': 'integrity_event',
-                'merkle_root': merkle_root_bytes.hex(),
-                'file_count': len(metadata),
-                'timestamp': int(time.time() * 1000),
-                'metadata': metadata
-            }
-
-            await self.websocket.send(json.dumps(message))
-            logger.info(f"Submitted Merkle root: {merkle_root_bytes.hex()[:32]}...")
-            return True
-
-        except Exception as e:
-            logger.error(f"Error submitting Merkle root: {e}")
-            self.connected = False
-            return False
-
-    async def close(self):
-        """Close connection"""
-        if self.websocket:
-            await self.websocket.close()
-            self.connected = False
-
-
 class FileAgent:
     """Main file monitoring agent"""
 
     def __init__(self):
         self.monitor = FileMonitor(WATCH_PATHS)
-        self.pbft_client = PBFTClient(NODE_WS_URL)
         self.running = False
 
         # Initialize database
@@ -182,74 +125,70 @@ class FileAgent:
         except Exception as e:
             logger.error(f"Error logging to database: {e}")
 
-    async def run_scan_cycle(self):
-        """Run one complete scan cycle"""
-        try:
-            # Compute current Merkle root
-            root, metadata = await self.monitor.compute_merkle_root()
+    async def connect_and_monitor(self):
+        """Connect to node and start monitoring"""
+        while self.running:
+            try:
+                async with websockets.connect(NODE_WS_URL) as websocket:
+                    logger.info(f"Connected to node at {NODE_WS_URL}")
 
-            if root:
-                # Submit to PBFT network
-                success = await self.pbft_client.submit_merkle_root(root, metadata)
+                    while self.running:
+                        # Monitor files and send integrity events
+                        root, metadata = await self.monitor.compute_merkle_root()
 
-                if success:
-                    await self.log_event(
-                        'file_scan',
-                        f'Submitted Merkle root with {len(metadata)} files',
-                        json.dumps({'root': root.hex(), 'file_count': len(metadata)})
-                    )
-                else:
-                    await self.log_event(
-                        'error',
-                        'Failed to submit Merkle root to PBFT network',
-                        json.dumps({'root': root.hex()})
-                    )
-            else:
-                logger.info("No files to monitor")
+                        if root:
+                            message = {
+                                'type': 'integrity_event',
+                                'merkle_root': root.hex(),
+                                'file_count': len(metadata),
+                                'timestamp': int(time.time() * 1000),
+                                'metadata': metadata
+                            }
 
-        except Exception as e:
-            logger.error(f"Error in scan cycle: {e}")
-            await self.log_event('error', f'Scan cycle error: {str(e)}')
+                            await websocket.send(json.dumps(message))
+                            logger.info(f"Sent integrity event: {root.hex()[:16]}...")
+
+                            await self.log_event(
+                                'file_scan',
+                                f'Submitted Merkle root with {len(metadata)} files',
+                                json.dumps({'root': root.hex(), 'file_count': len(metadata)})
+                            )
+
+                        await asyncio.sleep(SCAN_INTERVAL)
+
+            except Exception as e:
+                logger.error(f"Connection failed: {e}")
+                await asyncio.sleep(5)  # Retry after 5 seconds
 
     async def start(self):
         """Start the file monitoring agent"""
         logger.info("Starting File Monitoring Agent")
         logger.info(f"Watch paths: {[str(p) for p in self.monitor.watch_paths]}")
         logger.info(f"Scan interval: {SCAN_INTERVAL} seconds")
-        logger.info(f"PBFT node: {NODE_WS_URL}")
+        logger.info(f"Node WebSocket: {NODE_WS_URL}")
 
         self.running = True
         await self.log_event('system', 'File monitoring agent started')
 
-        # Connect to PBFT network
-        await self.pbft_client.connect()
-
-        # Main monitoring loop
-        while self.running:
-            try:
-                await self.run_scan_cycle()
-                await asyncio.sleep(SCAN_INTERVAL)
-            except KeyboardInterrupt:
-                logger.info("Received interrupt signal")
-                break
-            except Exception as e:
-                logger.error(f"Unexpected error: {e}")
-                await asyncio.sleep(5)  # Brief pause before retrying
-
-        await self.stop()
+        try:
+            await self.connect_and_monitor()
+        except KeyboardInterrupt:
+            logger.info("Received interrupt signal")
+        except Exception as e:
+            logger.error(f"Unexpected error: {e}")
+        finally:
+            await self.stop()
 
     async def stop(self):
         """Stop the file monitoring agent"""
         logger.info("Stopping File Monitoring Agent")
         self.running = False
-        await self.pbft_client.close()
         await self.log_event('system', 'File monitoring agent stopped')
 
 
 async def main():
     """Main entry point"""
     agent = FileAgent()
-
     try:
         await agent.start()
     except KeyboardInterrupt:

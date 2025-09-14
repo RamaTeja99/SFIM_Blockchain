@@ -1,5 +1,6 @@
 import hashlib
 from typing import List
+
 LEAF_PREFIX = b'\x00'
 NODE_PREFIX = b'\x01'
 
@@ -24,19 +25,18 @@ def hash_node(left: bytes, right: bytes) -> bytes:
 
 
 def merkle_root(leaves: List[bytes]) -> bytes:
-    """
-    Calculate Merkle root of given leaves
-    Returns empty bytes if no leaves provided
-    """
+    """Calculate Merkle root of given leaves"""
     if not leaves:
         return b''
+
     current_level = [hash_leaf(leaf) for leaf in leaves]
 
     while len(current_level) > 1:
         next_level = []
         for i in range(0, len(current_level), 2):
             if i + 1 == len(current_level):
-                next_level.append(current_level[i])
+                # Odd number of nodes, duplicate the last one
+                next_level.append(hash_node(current_level[i], current_level[i]))
             else:
                 next_level.append(hash_node(current_level[i], current_level[i + 1]))
         current_level = next_level
@@ -63,7 +63,7 @@ def merkle_proof(leaves: List[bytes], index: int) -> List[bytes]:
         next_level = []
         for i in range(0, len(current_level), 2):
             if i + 1 == len(current_level):
-                next_level.append(current_level[i])
+                next_level.append(hash_node(current_level[i], current_level[i]))
             else:
                 next_level.append(hash_node(current_level[i], current_level[i + 1]))
 
@@ -86,3 +86,18 @@ def verify_proof(leaf: bytes, proof: List[bytes], root: bytes, index: int) -> bo
         current_index //= 2
 
     return current_hash == root
+
+
+class MerkleTree:
+    def __init__(self, leaves: List[bytes]):
+        self.leaves = leaves
+        self.root = merkle_root(leaves)
+
+    def get_root(self):
+        return self.root
+
+    def get_proof(self, index: int):
+        return merkle_proof(self.leaves, index)
+
+    def verify(self, leaf: bytes, proof: List[bytes], index: int) -> bool:
+        return verify_proof(leaf, proof, self.root, index)

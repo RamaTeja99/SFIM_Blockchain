@@ -6,12 +6,12 @@ from typing import Dict, List, Optional
 from dataclasses import dataclass
 
 try:
-    from tpm2_pytss import ESAPI, TPM2_ALG, TPM2B_PUBLIC, TPM2B_SENSITIVE_CREATE
+    from tmp2_pytss import ESAPI, TPM2_ALG, TPM2B_PUBLIC, TPM2B_SENSITIVE_CREATE
 
     HAS_TPM = True
 except ImportError:
     HAS_TPM = False
-    logging.warning("tpm2-pytss not available, using simulated TPM")
+    logging.warning("tmp2-pytss not available, using simulated TPM")
 
 
 @dataclass
@@ -29,9 +29,9 @@ class TPMManager:
     def __init__(self, use_simulation: bool = None):
         self.logger = logging.getLogger("TPMManager")
 
-        # Auto-detect TPM availability if not specified
+        # Auto-detect TPM availability
         if use_simulation is None:
-            use_simulation = not HAS_TPM or not os.path.exists('/dev/tpm0')
+            use_simulation = not HAS_TPM or not os.path.exists('/dev/tmp0')
 
         self.use_simulation = use_simulation
         self.baseline_pcrs: Dict[int, bytes] = {}
@@ -53,13 +53,13 @@ class TPMManager:
     def _init_hardware_tpm(self):
         """Initialize hardware TPM connection"""
         if not HAS_TPM:
-            raise RuntimeError("tpm2-pytss not available for hardware TPM")
+            raise RuntimeError("tmp2-pytss not available for hardware TPM")
 
         try:
             # Read baseline PCR values
-            with ESAPI() as tpm:
+            with ESAPI() as tmp:
                 for pcr in range(8):  # Read first 8 PCRs for boot measurements
-                    # This is a simplified example - real implementation would use proper TPM commands
+                    # This would use proper TPM commands in real implementation
                     self.baseline_pcrs[pcr] = os.urandom(32)  # Placeholder
         except Exception as e:
             self.logger.error(f"Failed to initialize hardware TPM: {e}")
@@ -82,10 +82,10 @@ class TPMManager:
         """Generate simulated TPM quote"""
         pcr_values = {}
 
-        # Simulate current PCR values (occasionally different from baseline)
+        # Simulate current PCR values
         for pcr in pcr_list:
             if pcr in self.baseline_pcrs:
-                # 95% chance of matching baseline (indicating secure boot)
+                # 95% chance of matching baseline (secure boot)
                 if hash(nonce) % 100 < 95:
                     pcr_values[pcr] = self.baseline_pcrs[pcr]
                 else:
@@ -94,9 +94,9 @@ class TPMManager:
 
         # Create mock signature
         quote_data = b"".join([nonce] + [pcr_values[pcr] for pcr in sorted(pcr_values.keys())])
-        signature = hashlib.sha256(b"tpm_key_" + quote_data).digest()
+        signature = hashlib.sha256(b"tmp_key_" + quote_data).digest()
 
-        # Determine validity (all PCRs match baseline)
+        # Determine validity
         is_valid = all(pcr_values[pcr] == self.baseline_pcrs[pcr] for pcr in pcr_values)
 
         return AttestationQuote(
@@ -110,17 +110,15 @@ class TPMManager:
     def _collect_hardware_quote(self, nonce: bytes, pcr_list: List[int]) -> AttestationQuote:
         """Collect hardware TPM quote"""
         try:
-            with ESAPI() as tpm:
-                # This is a simplified implementation
-                # Real implementation would use proper TPM quote commands
+            with ESAPI() as tmp:
                 pcr_values = {}
                 for pcr in pcr_list:
-                    # Read PCR value - this is pseudocode
+                    # Read PCR value - would use proper TPM commands
                     pcr_values[pcr] = os.urandom(32)  # Placeholder
 
-                # Generate quote - this would use actual TPM quote command
+                # Generate quote - would use actual TPM quote command
                 quote_data = b"".join([nonce] + [pcr_values[pcr] for pcr in sorted(pcr_values.keys())])
-                signature = hashlib.sha256(b"hw_tpm_" + quote_data).digest()  # Placeholder
+                signature = hashlib.sha256(b"hw_tmp_" + quote_data).digest()  # Placeholder
 
                 is_valid = True  # Would verify against expected values
 
@@ -157,9 +155,9 @@ class TPMManager:
         expected_data = b"".join([quote.nonce] + [quote.pcr_values[pcr] for pcr in sorted(quote.pcr_values.keys())])
 
         if self.use_simulation:
-            expected_sig = hashlib.sha256(b"tpm_key_" + expected_data).digest()
+            expected_sig = hashlib.sha256(b"tmp_key_" + expected_data).digest()
         else:
-            expected_sig = hashlib.sha256(b"hw_tpm_" + expected_data).digest()
+            expected_sig = hashlib.sha256(b"hw_tmp_" + expected_data).digest()
 
         return quote.signature == expected_sig
 
@@ -174,7 +172,7 @@ class TPMManager:
             return "suspicious"
 
     def update_baseline_pcrs(self, new_pcrs: Dict[int, bytes]):
-        """Update baseline PCR values (for software updates, etc.)"""
+        """Update baseline PCR values"""
         self.baseline_pcrs.update(new_pcrs)
         self.logger.info(f"Updated baseline PCRs: {list(new_pcrs.keys())}")
 

@@ -2,42 +2,39 @@ import sys
 import os
 from pathlib import Path
 
-# Add backend to path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-
-from backend.models import init_database, engine, Base
-from backend.models import IntegrityEvent, TPMQuote, Node, AuditLog
+# Local imports
+from backend.models import init_database, SessionLocal, IntegrityEvent, AuditLog, NodeModel
 
 
-def create_tables():
+def create_tables(database_url):
     """Create all database tables"""
     print("Creating database tables...")
-    Base.metadata.create_all(bind=engine)
+    init_database(database_url)
     print("Tables created successfully!")
 
 
 def seed_data():
     """Insert sample data for testing"""
     from backend.models import SessionLocal
-    from datetime import datetime
 
     print("Seeding sample data...")
-
     db = SessionLocal()
     try:
-        # Add sample nodes
+        # Create sample nodes
         nodes = [
-            Node(node_id=0, address="ws://node0:7000", status="active"),
-            Node(node_id=1, address="ws://node1:7001", status="active"),
-            Node(node_id=2, address="ws://node2:7002", status="active"),
-            Node(node_id=3, address="ws://node3:7003", status="active"),
+            NodeModel(node_id=0, address="http://localhost:7000", status="active"),
+            NodeModel(node_id=1, address="http://localhost:7001", status="active"),
+            NodeModel(node_id=2, address="http://localhost:7002", status="active"),
+            NodeModel(node_id=3, address="http://localhost:7003", status="active"),
         ]
 
         for node in nodes:
-            db.add(node)
+            existing = db.query(NodeModel).filter(NodeModel.node_id == node.node_id).first()
+            if not existing:
+                db.add(node)
 
-        # Add sample integrity event
-        event = IntegrityEvent(
+        # Create sample integrity event
+        sample_event = IntegrityEvent(
             merkle_root="a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456",
             file_path="/watched/sample.txt",
             file_hash="sha512_hash_here",
@@ -45,9 +42,9 @@ def seed_data():
             consensus_round=1,
             status="committed"
         )
-        db.add(event)
+        db.add(sample_event)
 
-        # Add sample audit log
+        # Create audit log
         log = AuditLog(
             event_type="system_start",
             message="SFIM system initialized",
@@ -66,17 +63,16 @@ def seed_data():
 
 
 def main():
-    """Main initialization function"""
-    database_url = os.getenv('SFIM_DB', 'sqlite:///sfim_audit.db')
+    database_url = os.getenv('SFIM_DB', 'sqlite:///./data/sfim_audit.db')
     print(f"Initializing database: {database_url}")
 
-    # Initialize database
-    init_database(database_url)
+    # Ensure data directory exists
+    if database_url.startswith('sqlite:'):
+        db_path = database_url.replace('sqlite:///', '')
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
 
-    # Create tables
-    create_tables()
+    create_tables(database_url)
 
-    # Optionally seed data
     if len(sys.argv) > 1 and sys.argv[1] == "--seed":
         seed_data()
 
